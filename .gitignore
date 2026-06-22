@@ -1,0 +1,10 @@
+node_modules
+dist
+.DS_Store
+*.local
+.vite
+
+# Rust / Tauri
+src-tauri/target
+pdfium.dll
+src-tauri/pdfium.dll

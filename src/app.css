@@ -1,0 +1,62 @@
+:root {
+  /* Palet mengikuti mockup Acrobat-style (skin Feather, accent teal #117C6F).
+     Token dasar = tema terang; tema gelap dipasang lewat [data-theme="dark"].
+     Default aplikasi tetap gelap (lihat App.svelte) sesuai semangat Feather. */
+  --canvas: #f6f5f4; /* latar belakang aplikasi (di balik halaman) */
+  --surface: #ffffff; /* title bar, toolbar, tab aktif, panel */
+  --sunken: #eceae8; /* viewport (area baca) */
+  --border: rgba(0, 0, 0, 0.1);
+  --text: #241f31;
+  --text-muted: #5e5c64;
+  --accent: #117c6f;
+  --accent-hover: #0e6a5e;
+  --warning: #e5a50a;
+  --destructive: #c01c28;
+
+  --shadow-page: 0 2px 12px rgba(0, 0, 0, 0.14);
+  --shadow-float: 0 2px 10px rgba(0, 0, 0, 0.18);
+  --r-ctrl: 8px;
+
+  /* alias lama agar komponen lama tetap kompatibel */
+  --bg: var(--canvas);
+  --bg-elevated: var(--surface);
+  --bg-toolbar: var(--surface);
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --canvas: #242424;
+  --surface: #303030;
+  --sunken: #161616;
+  --border: rgba(255, 255, 255, 0.12);
+  --text: #ffffff;
+  --text-muted: #a8a8a8;
+  --accent: #2db39e;
+  --accent-hover: #48c7b3;
+  --warning: #f8c44f;
+  --destructive: #ff7b7b;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--canvas);
+  -webkit-user-select: none;
+  user-select: none;
+  overflow: hidden;
+}

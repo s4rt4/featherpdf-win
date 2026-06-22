@@ -1,0 +1,28 @@
+{
+  "name": "feather-pdf",
+  "version": "0.1.0",
+  "description": "Pembaca PDF native yang ringan & sat-set (Tauri + Svelte)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "tauri": "tauri"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@lucide/svelte": "^1.21.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-opener": "^2"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5",
+    "@tauri-apps/cli": "^2",
+    "svelte": "^5",
+    "svelte-check": "^4",
+    "typescript": "~5.6.2",
+    "vite": "^6"
+  }
+}
