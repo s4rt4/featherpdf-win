@@ -1,7 +1,7 @@
 # Feather PDF
 
-A lightweight, native PDF reader for Windows. Fast and snappy like SumatraPDF,
-with a modern, Acrobat-style interface. Built with Tauri 2 and Svelte 5,
+A lightweight, native PDF reader for Windows that stays fast and snappy while
+offering a modern, Acrobat-style interface. Built with Tauri 2 and Svelte 5,
 rendering through PDFium. Small installer, low memory, no embedded browser shell
 beyond the system WebView2.
 
