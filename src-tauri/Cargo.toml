@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Pembaca PDF native yang ringan & sat-set"
 authors = ["sarta"]
 edition = "2021"
+license = "MIT"
 
 [lib]
 # Suffix `_lib` agar nama lib unik & tak bentrok dengan nama bin di Windows.
