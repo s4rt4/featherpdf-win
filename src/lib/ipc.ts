@@ -85,6 +85,7 @@ export type PrintOpts = {
   paper_w: number; // lebar custom (0.1 mm; 0 = tidak)
   paper_h: number; // tinggi custom (0.1 mm)
   orientation: number; // 0=default, 1=portrait, 2=landscape
+  auto_rotate: boolean; // putar tiap halaman 90° agar cocok dgn kertas
 };
 
 /** Daftar printer + default untuk dialog cetak. */
@@ -108,4 +109,14 @@ export async function printDocument(
 /** Nama file dari sebuah path (Windows / POSIX). */
 export function basename(path: string): string {
   return path.split(/[\\/]/).pop() || path;
+}
+
+/** Ambil daftar PDF dari argumen peluncuran (dobel-klik file di Explorer).
+ *  Mengosongkan daftar di backend setelah diambil. */
+export async function takeStartupFiles(): Promise<string[]> {
+  try {
+    return await invoke<string[]>("take_startup_files");
+  } catch {
+    return [];
+  }
 }

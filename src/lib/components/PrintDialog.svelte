@@ -50,6 +50,7 @@
   let scaleMode = $state<"fit" | "actual" | "custom">("fit");
   let customScale = $state(100);
   let grayscale = $state(false);
+  let autoRotate = $state(true); // putar halaman agar orientasinya pas ke kertas
   let printing = $state(false);
   let progress = $state<{ done: number; total: number } | null>(null);
   let error = $state("");
@@ -199,6 +200,7 @@
       paper_w: pp.paper_w,
       paper_h: pp.paper_h,
       orientation,
+      auto_rotate: autoRotate,
     };
     printing = true;
     progress = { done: 0, total: pages.length * opts.copies };
@@ -320,6 +322,11 @@
             />%
           </label>
         </fieldset>
+
+        <label class="opt">
+          <input type="checkbox" bind:checked={autoRotate} /> Putar otomatis agar pas
+          ke kertas
+        </label>
 
         <label class="opt">
           <input type="checkbox" bind:checked={grayscale} /> Cetak grayscale

@@ -1,9 +1,33 @@
 mod pdf;
 mod print;
 
+use std::sync::Mutex;
+
 use pdf::{DocInfo, OutlineItem, PdfEngine, PrintOpts, SearchMatch};
 use serde::Serialize;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
+
+/// File PDF yang diberikan lewat argumen baris perintah saat aplikasi diluncurkan
+/// (mis. dobel-klik PDF di Explorer ketika Feather jadi handler default). Diambil
+/// frontend sekali saat mount via `take_startup_files`.
+struct PendingFiles(Mutex<Vec<String>>);
+
+/// Saring argv → hanya path yang berakhiran `.pdf`.
+fn pdf_args(argv: impl IntoIterator<Item = String>) -> Vec<String> {
+    argv.into_iter()
+        .filter(|a| a.to_lowercase().ends_with(".pdf"))
+        .collect()
+}
+
+/// Ambil (dan kosongkan) daftar file PDF dari peluncuran awal aplikasi.
+#[tauri::command]
+fn take_startup_files(state: State<'_, PendingFiles>) -> Vec<String> {
+    state
+        .0
+        .lock()
+        .map(|mut v| std::mem::take(&mut *v))
+        .unwrap_or_default()
+}
 
 /// Daftar printer yang tersedia + default.
 #[derive(Serialize)]
@@ -147,11 +171,28 @@ async fn print_document(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let engine = PdfEngine::new().expect("gagal inisialisasi engine PDFium");
+    // PDF dari argumen peluncuran (dobel-klik di Explorer).
+    let startup = pdf_args(std::env::args().skip(1));
 
     tauri::Builder::default()
+        // single-instance HARUS plugin pertama. Saat instance kedua diluncurkan
+        // (mis. dobel-klik PDF lain selagi Feather sudah jalan), argv-nya
+        // diteruskan ke instance yang sudah ada lewat event `open-files`, lalu
+        // jendelanya difokuskan — alih-alih membuka jendela baru.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let files = pdf_args(argv.into_iter().skip(1));
+            if !files.is_empty() {
+                let _ = app.emit("open-files", files);
+            }
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_focus();
+                let _ = w.unminimize();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(engine)
+        .manage(PendingFiles(Mutex::new(startup)))
         .invoke_handler(tauri::generate_handler![
             app_version,
             open_document,
@@ -162,7 +203,8 @@ pub fn run() {
             search_document,
             list_printers,
             list_papers,
-            print_document
+            print_document,
+            take_startup_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

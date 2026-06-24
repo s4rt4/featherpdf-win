@@ -3,12 +3,28 @@
   import ThumbnailPanel from "./lib/components/ThumbnailPanel.svelte";
   import OutlinePanel from "./lib/components/OutlinePanel.svelte";
   import PrintDialog from "./lib/components/PrintDialog.svelte";
+  import ShortcutsDialog from "./lib/components/ShortcutsDialog.svelte";
   import { untrack } from "svelte";
-  import { pickPdfs, searchDocument, type SearchMatch } from "./lib/ipc";
+  import {
+    pickPdfs,
+    searchDocument,
+    takeStartupFiles,
+    type SearchMatch,
+  } from "./lib/ipc";
+  import {
+    getRecent,
+    pushRecent,
+    removeRecent,
+    clearRecent,
+    relativeTime,
+    type RecentFile,
+  } from "./lib/recent";
   import { tabStore, type FitMode, type Layout } from "./lib/tabs.svelte";
   import logoUrl from "./assets/feather-logo.svg";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { listen } from "@tauri-apps/api/event";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import {
     FolderOpen,
     Search,
@@ -34,6 +50,10 @@
     Columns2,
     Grid2x2,
     Printer,
+    Keyboard,
+    FileText,
+    Clock,
+    Star,
   } from "@lucide/svelte";
 
   const CSS_SCALE = 96 / 72; // points -> CSS px pada 100%
@@ -85,13 +105,40 @@
     try {
       for (let i = 0; i < pdfs.length; i++) {
         await tabStore.open(pdfs[i], i === 0);
+        pushRecent(pdfs[i]);
         if (i === 0) requestAnimationFrame(() => applyFit("width"));
       }
+      recent = getRecent();
     } catch (e) {
       errorMsg = String(e);
     } finally {
       loading = false;
     }
+  }
+
+  // Buka satu file dari daftar terakhir; bila gagal (file dipindah/hapus),
+  // tampilkan pesan & buang dari daftar.
+  async function openRecent(path: string) {
+    try {
+      loading = true;
+      errorMsg = "";
+      await tabStore.open(path, true);
+      pushRecent(path);
+      recent = getRecent();
+      requestAnimationFrame(() => applyFit("width"));
+    } catch (e) {
+      errorMsg = `Tak bisa membuka file: ${e}`;
+      removeRecent(path);
+      recent = getRecent();
+    } finally {
+      loading = false;
+    }
+  }
+
+  function forgetRecent(path: string, e: MouseEvent) {
+    e.stopPropagation();
+    removeRecent(path);
+    recent = getRecent();
   }
 
   async function handleOpen() {
@@ -190,6 +237,21 @@
   let printOpen = $state(false); // dialog cetak
   let dragging = $state(false); // overlay drag-drop file
   let confirmClose = $state(false); // dialog konfirmasi tutup aplikasi
+  let shortcutsOpen = $state(false); // cheat sheet pintasan keyboard
+
+  // Daftar file terakhir dibuka (start page). localStorage tak reaktif, jadi
+  // simpan salinan di state & segarkan setelah membuka/menghapus.
+  let recent = $state<RecentFile[]>(getRecent());
+
+  // Membuka panel Settings Windows "Aplikasi default" agar user bisa menjadikan
+  // Feather pembaca PDF default (Windows tak izinkan app memaksa ini sendiri).
+  async function makeDefault() {
+    try {
+      await openUrl("ms-settings:defaultapps");
+    } catch (e) {
+      console.error("buka settings", e);
+    }
+  }
 
   // Fullscreen (mode baca imersif: chrome disembunyikan).
   let fullscreen = $state(false);
@@ -422,11 +484,20 @@
       } else if (e.key === "F11") {
         e.preventDefault();
         toggleFullscreen();
+      } else if (e.key === "F1" || (e.key === "?" && !isTyping(e))) {
+        e.preventDefault();
+        shortcutsOpen = true;
       } else if (e.key === "Escape") {
-        if (printOpen) printOpen = false;
+        if (shortcutsOpen) shortcutsOpen = false;
+        else if (printOpen) printOpen = false;
         else if (searchOpen) closeSearch();
         else if (fullscreen) toggleFullscreen();
       }
+    }
+    // `?` tak boleh memicu cheat sheet saat user sedang mengetik di input.
+    function isTyping(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA");
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -445,6 +516,19 @@
         } else dragging = false; // leave / cancel
       })
       .then((u) => (unlisten = u));
+    return () => unlisten?.();
+  });
+
+  // Buka file dari peluncuran awal (dobel-klik PDF di Explorer) + dengarkan
+  // event `open-files` (instance kedua meneruskan argv-nya ke sini).
+  $effect(() => {
+    let unlisten: (() => void) | undefined;
+    takeStartupFiles().then((files) => {
+      if (files.length) openPaths(files);
+    });
+    listen<string[]>("open-files", (e) => {
+      if (e.payload?.length) openPaths(e.payload);
+    }).then((u) => (unlisten = u));
     return () => unlisten?.();
   });
 
@@ -528,9 +612,17 @@
         class="rbtn-top"
         class:on={searchOpen}
         title="Cari (Ctrl+F)"
+        disabled={!active}
         onclick={() => (searchOpen ? closeSearch() : openSearch())}
       >
         <Search size={16} />
+      </button>
+      <button
+        class="rbtn-top"
+        title="Pintasan keyboard (?)"
+        onclick={() => (shortcutsOpen = true)}
+      >
+        <Keyboard size={16} />
       </button>
       <button
         class="rbtn-top"
@@ -853,14 +945,58 @@
         </div>
       </div>
     {:else}
-      <div class="center empty">
-        <img class="empty-logo" src={logoUrl} alt="" width="84" height="84" />
-        <h1>Feather PDF</h1>
-        <p class="muted">Buka file PDF untuk mulai membaca.</p>
-        <button class="open-cta" onclick={handleOpen}>
-          <FolderOpen size={18} />
-          <span>Buka PDF</span>
-        </button>
+      <div class="start">
+        <div class="start-inner">
+          <div class="hero">
+            <img class="empty-logo" src={logoUrl} alt="" width="72" height="72" />
+            <h1>Feather PDF</h1>
+            <div class="hero-actions">
+              <button class="open-cta" onclick={handleOpen}>
+                <FolderOpen size={18} />
+                <span>Buka PDF</span>
+              </button>
+              <button class="ghost-cta" title="Jadikan Feather pembaca PDF default" onclick={makeDefault}>
+                <Star size={16} />
+                <span>Jadikan default</span>
+              </button>
+            </div>
+          </div>
+
+          {#if recent.length}
+            <div class="recent">
+              <div class="recent-head">
+                <Clock size={14} />
+                <span>Terakhir dibuka</span>
+                <span class="grow"></span>
+                <button class="link" onclick={() => { clearRecent(); recent = getRecent(); }}>
+                  Bersihkan
+                </button>
+              </div>
+              <ul class="recent-list">
+                {#each recent as r (r.path)}
+                  <li>
+                    <button class="recent-item" title={r.path} onclick={() => openRecent(r.path)}>
+                      <FileText size={18} class="ri-icon" />
+                      <span class="ri-name">{r.name}</span>
+                      <span class="ri-path">{r.path}</span>
+                      <span class="ri-time">{relativeTime(r.ts)}</span>
+                      <span
+                        class="ri-x"
+                        role="button"
+                        tabindex="0"
+                        title="Hapus dari daftar"
+                        onclick={(e) => forgetRecent(r.path, e)}
+                        onkeydown={(e) => e.key === "Enter" && forgetRecent(r.path, e as unknown as MouseEvent)}
+                      >
+                        <X size={14} />
+                      </span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
+        </div>
       </div>
     {/if}
   </div>
@@ -871,6 +1007,10 @@
       currentPage={active.page}
       onClose={() => (printOpen = false)}
     />
+  {/if}
+
+  {#if shortcutsOpen}
+    <ShortcutsDialog onClose={() => (shortcutsOpen = false)} />
   {/if}
 
   {#if dragging}
@@ -1446,6 +1586,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 14px;
     text-align: center;
   }
   .muted {
@@ -1459,15 +1600,10 @@
   .empty-logo {
     opacity: 0.92;
   }
-  .empty h1 {
-    margin: 14px 0 4px;
-    font-size: 22px;
-  }
   .open-cta {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    margin-top: 16px;
     height: 38px;
     padding: 0 18px;
     border: none;
@@ -1480,5 +1616,170 @@
   }
   .open-cta:hover {
     background: var(--accent-hover);
+  }
+
+  /* start page */
+  .start {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    justify-content: center;
+  }
+  .start-inner {
+    width: 100%;
+    max-width: 640px;
+    padding: 56px 24px 40px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+  .hero h1 {
+    margin: 14px 0 4px;
+    font-size: 22px;
+  }
+  .hero-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 18px;
+  }
+  .ghost-cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 38px;
+    padding: 0 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-ctrl);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .ghost-cta:hover {
+    background: var(--canvas);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* daftar terakhir dibuka */
+  .recent {
+    width: 100%;
+    margin-top: 44px;
+  }
+  .recent-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 0 6px 8px;
+  }
+  .recent-head .grow {
+    flex: 1;
+  }
+  .recent-head .link {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 5px;
+  }
+  .recent-head .link:hover {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  .recent-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .recent-item {
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .recent-item:hover {
+    background: var(--surface);
+    border-color: var(--border);
+  }
+  .recent-item :global(.ri-icon) {
+    color: var(--accent);
+    flex: none;
+    grid-row: 1 / 3;
+    align-self: center;
+  }
+  .ri-time,
+  .ri-x {
+    grid-row: 1 / 3;
+    align-self: center;
+  }
+  .ri-name {
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ri-path {
+    grid-column: 2;
+    grid-row: 2;
+    font-size: 11px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ri-time {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .ri-x {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    color: var(--text-muted);
+    opacity: 0;
+  }
+  .recent-item:hover .ri-x {
+    opacity: 1;
+  }
+  .ri-x:hover {
+    background: var(--canvas);
+    color: var(--text);
   }
 </style>

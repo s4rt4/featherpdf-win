@@ -69,6 +69,7 @@ pub struct PrintOpts {
     pub paper_w: u16,        // lebar kertas custom (0.1 mm; 0 = tidak)
     pub paper_h: u16,        // tinggi kertas custom (0.1 mm)
     pub orientation: u16,    // 0=default, 1=portrait, 2=landscape
+    pub auto_rotate: bool,   // putar tiap halaman 90° agar orientasinya cocok dgn kertas
 }
 
 enum Cmd {
@@ -164,6 +165,80 @@ impl PdfEngine {
     }
 }
 
+/// Cache LRU halaman ter-render (buffer keluaran `render_page_raw` lengkap:
+/// `[w][h][rgba]`). Kunci = (doc_id, indeks, skala×1000 dibulatkan) sehingga
+/// halaman yang sama pada zoom yang sama tak perlu dirender ulang (mis. saat
+/// balik-balik halaman atau scroll naik-turun). Dibatasi total byte; entri
+/// paling lama tak dipakai dibuang lebih dulu.
+struct RenderCache {
+    map: HashMap<(u32, usize, u32), (Vec<u8>, u64)>,
+    budget: usize,
+    used: usize,
+    tick: u64,
+}
+
+impl RenderCache {
+    fn new(budget: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            budget,
+            used: 0,
+            tick: 0,
+        }
+    }
+
+    fn get(&mut self, k: &(u32, usize, u32)) -> Option<Vec<u8>> {
+        self.tick += 1;
+        let tick = self.tick;
+        self.map.get_mut(k).map(|e| {
+            e.1 = tick; // perbarui "terakhir dipakai"
+            e.0.clone()
+        })
+    }
+
+    fn put(&mut self, k: (u32, usize, u32), v: Vec<u8>) {
+        let sz = v.len();
+        if sz > self.budget {
+            return; // satu halaman lebih besar dari budget: jangan cache
+        }
+        self.tick += 1;
+        if let Some(old) = self.map.insert(k, (v, self.tick)) {
+            self.used -= old.0.len();
+        }
+        self.used += sz;
+        // Buang entri LRU sampai muat budget.
+        while self.used > self.budget {
+            let lru = self
+                .map
+                .iter()
+                .min_by_key(|(_, e)| e.1)
+                .map(|(k, _)| *k);
+            match lru {
+                Some(lk) => {
+                    if let Some(old) = self.map.remove(&lk) {
+                        self.used -= old.0.len();
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+
+    fn purge_doc(&mut self, doc_id: u32) {
+        let keys: Vec<_> = self
+            .map
+            .keys()
+            .filter(|k| k.0 == doc_id)
+            .copied()
+            .collect();
+        for k in keys {
+            if let Some(old) = self.map.remove(&k) {
+                self.used -= old.0.len();
+            }
+        }
+    }
+}
+
 /// Loop satu worker: punya instance Pdfium + peta dokumen sendiri. Meminjam
 /// `pdfium` selama loop, jadi lifetime aman tanpa unsafe.
 fn run_worker(rx: mpsc::Receiver<Cmd>, ready_tx: Sender<Result<(), String>>) {
@@ -177,6 +252,8 @@ fn run_worker(rx: mpsc::Receiver<Cmd>, ready_tx: Sender<Result<(), String>>) {
     let _ = ready_tx.send(Ok(()));
 
     let mut docs: HashMap<u32, PdfDocument> = HashMap::new();
+    // ~320 MB halaman ter-render (≈ 50+ halaman A4 pada zoom & dpr umum).
+    let mut cache = RenderCache::new(320 * 1024 * 1024);
 
     for cmd in rx {
         match cmd {
@@ -217,10 +294,22 @@ fn run_worker(rx: mpsc::Receiver<Cmd>, ready_tx: Sender<Result<(), String>>) {
                 scale,
                 resp,
             } => {
-                let _ = resp.send(render_page_raw(docs.get(&doc_id), index, scale));
+                let key = (doc_id, index, (scale * 1000.0).round() as u32);
+                let out = match cache.get(&key) {
+                    Some(hit) => Ok(hit),
+                    None => {
+                        let r = render_page_raw(docs.get(&doc_id), index, scale);
+                        if let Ok(ref bytes) = r {
+                            cache.put(key, bytes.clone());
+                        }
+                        r
+                    }
+                };
+                let _ = resp.send(out);
             }
             Cmd::Close { doc_id } => {
                 docs.remove(&doc_id);
+                cache.purge_doc(doc_id);
             }
             Cmd::Outline { doc_id, resp } => {
                 let result = match docs.get(&doc_id) {
@@ -575,6 +664,24 @@ fn render_rgba(doc: &PdfDocument, index: usize, scale: f32) -> Result<(u32, u32,
     Ok((rgba.width(), rgba.height(), rgba.into_raw()))
 }
 
+/// Putar buffer piksel 32-bit (4 byte/piksel) 90° searah jarum jam. Dimensi
+/// keluaran tertukar (w×h → h×w). Dipakai print auto-rotate agar halaman
+/// landscape muat di kertas portrait (atau sebaliknya) tanpa terpotong.
+fn rotate90_cw(src: &[u8], w: usize, h: usize) -> Vec<u8> {
+    let mut dst = vec![0u8; src.len()];
+    let dst_w = h; // lebar tujuan = tinggi sumber
+    for sy in 0..h {
+        for sx in 0..w {
+            let dx = h - 1 - sy;
+            let dy = sx;
+            let si = (sy * w + sx) * 4;
+            let di = (dy * dst_w + dx) * 4;
+            dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
+        }
+    }
+    dst
+}
+
 /// Konversi RGBA → BGRA (urutan yang diharapkan DIB GDI). Jika `grayscale`,
 /// ganti tiap piksel dengan luminansinya.
 fn to_bgra(buf: &mut [u8], grayscale: bool) {
@@ -624,11 +731,24 @@ fn print_doc(
                     .pages()
                     .get((idx as u16).into())
                     .map_err(|e| format!("halaman {idx} tidak ada: {e}"))?;
-                let pin_w = page.width().value / 72.0; // inci
-                let pin_h = page.height().value / 72.0;
+                let mut pin_w = page.width().value / 72.0; // inci
+                let mut pin_h = page.height().value / 72.0;
 
                 // Render bitmap sumber.
-                let (w, h, mut rgba) = render_rgba(doc, idx, RENDER_DPI / 72.0)?;
+                let (mut w, mut h, mut rgba) = render_rgba(doc, idx, RENDER_DPI / 72.0)?;
+
+                // Auto-rotate: kalau orientasi halaman (landscape/portrait) beda
+                // dgn orientasi area cetak, putar 90° agar muat tanpa terpotong &
+                // memaksimalkan ukuran. Orientasi paper-level (dmOrientation) tetap
+                // dipakai untuk kertasnya; ini menyesuaikan ISI per halaman.
+                let paper_landscape = printable_w > printable_h;
+                let page_landscape = pin_w > pin_h;
+                if opts.auto_rotate && page_landscape != paper_landscape {
+                    rgba = rotate90_cw(&rgba, w as usize, h as usize);
+                    std::mem::swap(&mut w, &mut h);
+                    std::mem::swap(&mut pin_w, &mut pin_h);
+                }
+
                 to_bgra(&mut rgba, opts.grayscale);
 
                 // Ukuran target (device px) sesuai mode skala.
